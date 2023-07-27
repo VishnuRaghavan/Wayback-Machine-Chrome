@@ -44,20 +44,20 @@ function homepage() {
 // If the popup displays, we know user already agreed in Welcome page.
 // This is a fix for Safari resetting the 'agreement' setting.
 function initAgreement() {
-  chrome.storage.local.set({ agreement: true }, () => {})
+  chrome.storage.local.set({ agreement: true }, () => { })
 }
 
 // Popup tip over settings tab icon after first load.
 function showSettingsTabTip() {
   let tt = $('<div>').append($('<p>').text('There are more great features in Settings!').attr({ 'class': 'setting-tip' }))[0].outerHTML
-  let tabItem = $('#settings-tab-btn').parent()
+  let tabItem = $('#settings-tab-btn')
   setTimeout(() => {
     tabItem.append(attachTooltip(tabItem, tt, 'top'))
     .tooltip('show')
     .on('mouseenter', () => {
       $(tabItem).tooltip('hide')
       // prevent tooltip from ever showing again once mouse entered
-      chrome.storage.local.set({ show_settings_tab_tip: false }, () => {})
+      chrome.storage.local.set({ show_settings_tab_tip: false }, () => { })
     })
   }, 500)
 }
@@ -128,16 +128,18 @@ function setupSaveAction(url) {
   if (url && isValidUrl(url) && isNotExcludedUrl(url) && !isArchiveUrl(url)) {
     $('#spn-btn').off('click').on('click', doSaveNow)
     chrome.storage.local.get(['private_mode_setting'], (settings) => {
-      // auto save page
       if (settings && (settings.private_mode_setting === false)) {
         chrome.runtime.sendMessage({
-          message: 'getLastSaveTime',
-          page_url: url
+          message: 'getCachedWaybackCount',
+          url: url
         }, (message) => {
           checkLastError()
-          if (message && (message.message === 'last_save')) {
-            if (message.timestamp) {
-              $('#last-saved-msg').text('Last Saved ' + viewableTimestamp(message.timestamp)).show()
+          if (message) {
+            if (('last_ts' in message) && message.last_ts) {
+              $('#last-saved-msg').text('Last Saved ' + viewableTimestamp(message.last_ts)).show()
+            } else if (('total' in message) && (message.total === -1)) {
+              $('#last-saved-msg').text('URL excluded from viewing').show()
+              $('.blocked-dim').attr('disabled', true).css('opacity', '0.66').css('cursor', 'not-allowed')
             } else if ('error' in message) {
               $('#last-saved-msg').text('Wayback Machine Unavailable').show()
             } else {
@@ -177,7 +179,6 @@ function loginError() {
   // $('#spn-btn').off('click').on('click', showLoginPage)
 
   // setup options that open login page
-  // $('.auth-dim').css('opacity', '50%')
   $('.auth-icon').addClass('auth-icon-active')
   $('.auth-disabled').attr('disabled', true)
   $('.auth-click1').off('click').on('click', showLoginFromMain)
@@ -196,7 +197,6 @@ function loginError() {
 function loginSuccess() {
 
   // reset options that open login page
-  // $('.auth-dim').css('opacity', '100%')
   $('.auth-icon').removeClass('auth-icon-active')
   $('.auth-disabled').removeAttr('disabled')
   $('.auth-click1').off('click')
@@ -714,10 +714,12 @@ function showUrlNotSupported(flag) {
     $('#last-saved-msg').hide()
     $('#url-not-supported-msg').text('URL not supported')
     $('#spn-back-label').text('URL not supported')
+    $('.not-sup-dim').attr('disabled', true).css('opacity', '0.66').css('cursor', 'not-allowed')
   } else {
     $('#spn-btn').off('click').on('click', doSaveNow)
     $('#spn-btn').removeClass('flip-inside')
     $('#url-not-supported-msg').text('').hide()
+    $('.not-sup-dim').attr('disabled', false).css('opacity', '1.0').css('cursor', '')
   }
 }
 
@@ -750,7 +752,7 @@ function showWaybackCount(url) {
   $('#wayback-count-msg').show()
   chrome.runtime.sendMessage({ message: 'getCachedWaybackCount', url: url }, (result) => {
     checkLastError()
-    if (result && ('total' in result)) {
+    if (result && ('total' in result) && (result.total >= 0)) {
       // set label
       let text = ''
       if (result.total === 1) {
@@ -829,15 +831,6 @@ function enableAfterSaving() {
   $('#chk-screenshot').removeAttr('disabled')
 }
 
-// make the tab/window option in setting page checked according to previous setting
-function setupViewSetting() {
-  chrome.storage.local.get(['view_setting'], (settings) => {
-    if (settings && settings.view_setting) {
-      $(`input[name=tw][value=${settings.view_setting}]`).prop('checked', true)
-    }
-  })
-}
-
 // respond to Save Page Now success
 function setupSaveListener() {
   chrome.runtime.onMessage.addListener(
@@ -891,7 +884,6 @@ $(function() {
   setupLoginState()
   setupWaybackCount()
   setupSaveListener()
-  setupViewSetting()
   setupSettingsTabTip()
   $('.logo-wayback-machine').click(homepage)
   $('#newest-btn').click(openNewestPage)

@@ -109,14 +109,11 @@ Any URL
 - https://www.whitehouse.gov/energy/climate-change
 - http://purl.oclc.org/docs/inet96.html
 
-302 Redirect to 404 above:
-- http://purl.oclc.org/OCLC/PURL/INET96
-
 410 Page has gone:
 - https://medium.com/@communismkills/here-are-the-companies-that-support-antifa-black-lives-matter-and-want-you-dead-1d79b1845f59
 
 Domain no longer exists:
-- https://thekindlyones.org/2010/10/13/refusing-to-look-through-galileos-telescope/
+- http://mercedesfan.store/
 
 </td>
 </tr>
@@ -125,9 +122,11 @@ Domain no longer exists:
 <th>Contextual Notices</th>
 <td>
 
-Should display yellow dot, 'Contextual Notices':
-- https://www.oralhealthgroup.com/features/face-masks-dont-work-revealing-review/
+Should display yellow dot, 'Show Context':
 - https://www.capradio.org/articles/2019/02/12/text-and-analysis-state-of-the-state-2019
+
+Should return data but NOT display yellow dot:
+- https://www.oralhealthgroup.com/features/face-masks-dont-work-revealing-review/
 - https://jhunewsletter.com/article/2020/11/a-closer-look-at-u-s-deaths-due-to-covid-19
 - https://chicagotribune.com/coronavirus/fl-ne-miami-doctor-vaccine-death-20210107-afzysvqqjbgwnetcy5v6ec62py-story.html
 
@@ -257,6 +256,9 @@ Test that SPN works on URLs containing percent-encodings: [#279](https://github.
 - https://www.courthousenews.com/%EF%BB%BFopponents-of-drag-queen-story-hour-tossed-from-court/
 
 Check above URLs work with Wayback (Oldest, Overview, Newest), Social Links, Copy to Clipboard.
+
+Test that URLs which are excluded from the Wayback Machine don't Auto-Save, buttons disabled, message shows. See issue [#944](https://github.com/internetarchive/wayback-machine-webextension/issues/944) and [PR #951](https://github.com/internetarchive/wayback-machine-webextension/pull/951) for screenshots.
+- Example: https://www.tomshardware.com/
 
 </td>
 </tr>

@@ -15,9 +15,9 @@ const defaultAutoExcludeList = [
 
 // list of excluded URLs
 const excluded_urls = [
+  '127.0.0.1',
   'localhost',
   '0.0.0.0',
-  '127.0.0.1',
   'chrome:',
   'chrome-extension:',
   'about:',
@@ -171,12 +171,39 @@ function getUserInfo() {
 
 /**
  * Check if user is logged in by checking cookies.
+ * Will retrieve auth cookies from storage and restore cookies if missing.
  * @param callback(result) : returns object { auth_check: bool } where auth_check == true if logged in, false if not.
  */
 function checkAuthentication(acallback) {
-  chrome.cookies.get({ url: 'https://archive.org', name: 'logged-in-sig' }, (result) => {
-    let loggedIn = (result && result.value && (result.value.length > 0)) || false
-    acallback({ 'auth_check': loggedIn })
+  chrome.cookies.getAll({ url: 'https://archive.org' }, (cookies) => {
+    let loggedIn = false, ia_auth = false
+    cookies.forEach(cookie => {
+      if ((cookie.name === 'logged-in-sig') && cookie.value && (cookie.value.length > 0)) { loggedIn = true }
+      else if ((cookie.name === 'ia-auth') && cookie.value && (cookie.value.length > 0)) { ia_auth = true }
+    })
+    if (loggedIn) {
+      // store auth cookies in storage
+      chrome.storage.local.set({ auth_cookies: cookies })
+      acallback({ 'auth_check': true })
+    } else {
+      // if cookies not set but found in storage, then restore cookies from storage,
+      // but if user previously logged out of archive.org on the web (ia_auth == true), then don't restore cookies from storage.
+      chrome.storage.local.get(['auth_cookies'], (items) => {
+        if (items.auth_cookies && !ia_auth) {
+          items.auth_cookies.forEach(authCookie => {
+            // set only a subset of keys to avoid TypeErrors
+            const newCookie = Object.fromEntries(
+              ['domain', 'expirationDate', 'httpOnly', 'name', 'path', 'sameSite', 'secure', 'storeId', 'url', 'value']
+              .filter(k => k in authCookie).map(k => [k, authCookie[k]])
+            )
+            newCookie.url = 'https://archive.org'
+            chrome.cookies.set(newCookie)
+            if ((authCookie.name === 'logged-in-sig') && authCookie.value && (authCookie.value.length > 0)) { loggedIn = true }
+          })
+        }
+        acallback({ 'auth_check': loggedIn })
+      })
+    }
   })
 }
 
@@ -312,6 +339,10 @@ function getWaybackCount(url, onSuccess, onFail) {
           }
         }
       }
+      // set total to special value if URL is excluded from viewing
+      if (json.error && json.error.type && (json.error.type === 'blocked')) {
+        total = -1
+      }
       let values = { total: total, first_ts: json.first_ts, last_ts: json.last_ts }
       onSuccess(values)
     })
@@ -360,7 +391,7 @@ function isArchiveUrl(url) {
   if (typeof url !== 'string') { return false }
   try {
     const hostname = new URL(url).hostname
-    return (hostname === 'archive.org') || hostname.endsWith('.archive.org')
+    return (hostname === 'web.archive.org')
   } catch (e) {
     // url not formated correctly
     return false
@@ -627,6 +658,15 @@ function opener(url, option, callback) {
     chrome.tabs.create({ url: url }, (tab) => {
       if (callback) { callback(tab.id) }
     })
+  } else if (option === 'replace') {
+    // Back button may not work due to a bug in Chrome, but works fine in Firefox.
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      if (tabs && tabs[0]) {
+        chrome.tabs.update(tabs[0].id, { active: true, url: url }, (tab) => {
+          if (callback) { callback(tab.id) }
+        })
+      }
+    })
   } else {
     let w = window.screen.availWidth, h = window.screen.availHeight
     if (w > h) {
@@ -634,7 +674,7 @@ function opener(url, option, callback) {
       const maxW = 1200
       w = Math.floor(((w > maxW) ? maxW : w) * 0.666)
       h = Math.floor(w * 0.75)
-    } else {
+    } else { // option === 'window'
       // portrait screen (likely mobile)
       w = Math.floor(w * 0.9)
       h = Math.floor(h * 0.9)
@@ -645,14 +685,33 @@ function opener(url, option, callback) {
   }
 }
 
-function notify(message, callback) {
-  let options = {
-    type: 'basic',
-    title: 'Wayback Machine',
-    message: message,
-    iconUrl: chrome.runtime.getURL('images/app-icon/app-icon96.png')
+// Displays a notification by the OS.
+// Unless Disable Notificaions setting is true.
+// Safari doesn't support notifications so this will do nothing.
+//
+function notifyMsg(msg, callback) {
+  if (chrome.notifications) {
+    chrome.storage.local.get(['notify_setting'], (settings) => {
+      if (settings && !settings.notify_setting) {
+        const options = {
+          type: 'basic',
+          title: 'Wayback Machine',
+          message: msg,
+          iconUrl: chrome.runtime.getURL('images/app-icon/app-icon96.png')
+        }
+        chrome.notifications.create(options, callback)
+      }
+    })
   }
-  chrome.notifications && chrome.notifications.create(options, callback)
+}
+
+// Pop up an alert message.
+//   Chrome & Edge: Popup alert modal.
+//   Firefox: Errors on alert(), so show notification instead.
+//   Safari: Ignores alert()
+//
+function alertMsg(msg) {
+  if (isFirefox) { notifyMsg(msg) } else { alert(msg) }
 }
 
 function checkLastError() {
@@ -681,7 +740,7 @@ function attachTooltip (anchor, tooltip, pos = 'right', time = 200) {
     trigger: 'manual'
   })
   // Handles staying open
-  .on('mouseenter', () => {
+  .on('mouseenter click', () => {
     $(anchor).tooltip('show')
     $('.popup_box').on('mouseleave', () => {
       setTimeout(() => {
@@ -691,7 +750,7 @@ function attachTooltip (anchor, tooltip, pos = 'right', time = 200) {
       }, time)
     })
   })
-  .on('mouseleave', () => {
+  .on('mouseleave blur', () => {
     setTimeout(() => {
       if (!$('.popup_box:hover').length) {
         $(anchor).tooltip('hide')
@@ -709,36 +768,47 @@ function initAutoExcludeList() {
   })
 }
 
-function setupContextMenus() {
-  chrome.contextMenus.create({
-    'id': 'save',
-    'title': 'Save Page Now',
-    'contexts': ['page', 'frame', 'link'],
-    'documentUrlPatterns': ['*://*/*', 'ftp://*/*']
-  }, checkLastError)
-  chrome.contextMenus.create({
-    'type': 'separator',
-    'contexts': ['page', 'frame', 'link'],
-    'documentUrlPatterns': ['*://*/*', 'ftp://*/*']
+function setupContextMenus(enabled) {
+  chrome.contextMenus.removeAll(() => {
+    if (enabled) {
+      chrome.contextMenus.create({
+        'id': 'save',
+        'title': 'Save Page Now',
+        'contexts': ['page', 'frame', 'link'],
+        'documentUrlPatterns': ['*://*/*', 'ftp://*/*']
+      }, checkLastError)
+      chrome.contextMenus.create({
+        'type': 'separator',
+        'contexts': ['page', 'frame', 'link'],
+        'documentUrlPatterns': ['*://*/*', 'ftp://*/*']
+      })
+      chrome.contextMenus.create({
+        'id': 'first',
+        'title': 'Oldest Version',
+        'contexts': ['page', 'frame', 'link'],
+        'documentUrlPatterns': ['*://*/*', 'ftp://*/*']
+      }, checkLastError)
+      chrome.contextMenus.create({
+        'id': 'recent',
+        'title': 'Newest Version',
+        'contexts': ['page', 'frame', 'link'],
+        'documentUrlPatterns': ['*://*/*', 'ftp://*/*']
+      }, checkLastError)
+      chrome.contextMenus.create({
+        'id': 'all',
+        'title': 'All Versions',
+        'contexts': ['page', 'frame', 'link'],
+        'documentUrlPatterns': ['*://*/*', 'ftp://*/*']
+      }, checkLastError)
+    } else {
+      chrome.contextMenus.create({
+        'id': 'welcome',
+        'title': 'Welcome to the Wayback Machine',
+        'contexts': ['page', 'frame', 'link'],
+        'documentUrlPatterns': ['*://*/*', 'ftp://*/*']
+      }, checkLastError)
+    }
   })
-  chrome.contextMenus.create({
-    'id': 'first',
-    'title': 'Oldest Version',
-    'contexts': ['page', 'frame', 'link'],
-    'documentUrlPatterns': ['*://*/*', 'ftp://*/*']
-  }, checkLastError)
-  chrome.contextMenus.create({
-    'id': 'recent',
-    'title': 'Newest Version',
-    'contexts': ['page', 'frame', 'link'],
-    'documentUrlPatterns': ['*://*/*', 'ftp://*/*']
-  }, checkLastError)
-  chrome.contextMenus.create({
-    'id': 'all',
-    'title': 'All Versions',
-    'contexts': ['page', 'frame', 'link'],
-    'documentUrlPatterns': ['*://*/*', 'ftp://*/*']
-  }, checkLastError)
 }
 
 // Default Settings prior to accepting terms.
@@ -776,7 +846,7 @@ function afterAcceptTerms () {
     not_found_setting: true
   })
   chrome.browserAction.setPopup({ popup: chrome.runtime.getURL('index.html') }, checkLastError)
-  setupContextMenus()
+  setupContextMenus(true)
 }
 
 if (typeof module !== 'undefined') {
@@ -798,7 +868,8 @@ if (typeof module !== 'undefined') {
     wmAvailabilityCheck,
     openByWindowSetting,
     sleep,
-    notify,
+    notifyMsg,
+    alertMsg,
     attachTooltip,
     getUserInfo,
     checkAuthentication,

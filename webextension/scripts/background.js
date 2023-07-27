@@ -4,10 +4,10 @@
 // Copyright 2016-2020, Internet Archive
 
 // from 'utils.js'
-/*   global isNotExcludedUrl, getCleanUrl, isArchiveUrl, isValidUrl, notify, openByWindowSetting, sleep, wmAvailabilityCheck, hostURL, isFirefox */
+/*   global isNotExcludedUrl, getCleanUrl, isArchiveUrl, isValidUrl, notifyMsg, openByWindowSetting, sleep, wmAvailabilityCheck, hostURL */
 /*   global initDefaultOptions, badgeCountText, getWaybackCount, newshosts, dateToTimestamp, fixedEncodeURIComponent, checkLastError */
 /*   global hostHeaders, gCustomUserAgent, timestampToDate, isBadgeOnTop, isUrlInList, getTabKey, saveTabData, readTabData, initAutoExcludeList */
-/*   global isDevVersion, checkAuthentication, setupContextMenus, cropPrefix */
+/*   global isDevVersion, checkAuthentication, setupContextMenus, cropPrefix, alertMsg */
 
 // Used to store the statuscode of the if it is a httpFailCodes
 let gStatusCode = 0
@@ -32,19 +32,6 @@ function rewriteUserAgentHeader(e) {
     }
   }
   return { requestHeaders: e.requestHeaders }
-}
-
-function URLopener(open_url, url, wmIsAvailable) {
-  if (wmIsAvailable === true) {
-    wmAvailabilityCheck(url, () => {
-      openByWindowSetting(open_url)
-    }, () => {
-      const msg = 'This page has not been archived.'
-      if (isFirefox) { notify(msg) } else { alert(msg) }
-    })
-  } else {
-    openByWindowSetting(open_url)
-  }
 }
 
 /* * * API Calls * * */
@@ -107,14 +94,15 @@ function savePageNow(atab, pageUrl, silent = false, options = {}, loggedInFlag =
         if (errMsg.indexOf('same snapshot') !== -1) {
           // snapshot already archived within timeframe
           chrome.runtime.sendMessage({ message: 'save_archived', error: errMsg, url: pageUrl, atab: atab }, checkLastError)
-          if (!silent) { notify(errMsg) }
+          if (!silent) { notifyMsg(errMsg) }
         } else {
           // update UI
           addToolbarState(atab, 'S')
+          updateWaybackCountBadge(atab, null)
           chrome.runtime.sendMessage({ message: 'save_start', atab: atab, url: pageUrl }, checkLastError)
           // show resources during save
           if (!silent) {
-            notify('Saving ' + pageUrl)
+            notifyMsg('Saving ' + pageUrl)
             chrome.storage.local.get(['resource_list_setting'], (settings) => {
               if (settings && settings.resource_list_setting) {
                 const resource_list_url = chrome.runtime.getURL('resource-list.html') + '?url=' + pageUrl + '&job_id=' + jobId + '#not_refreshed'
@@ -129,7 +117,7 @@ function savePageNow(atab, pageUrl, silent = false, options = {}, loggedInFlag =
       } else {
         // missing jobId error
         chrome.runtime.sendMessage({ message: 'save_error', error: errMsg, url: pageUrl, atab: atab }, checkLastError)
-        if (!silent) { notify('Error: ' + errMsg) }
+        if (!silent) { notifyMsg('Error: ' + errMsg) }
       }
     })
     .catch((err) => {
@@ -229,7 +217,7 @@ function statusSuccess(atab, pageUrl, silent, data) {
     if (('message' in data) && (data.message.length > 0)) {
       msg = data.message
     }
-    notify(msg, (notificationId) => {
+    notifyMsg(msg, (notificationId) => {
       chrome.notifications && chrome.notifications.onClicked.addListener((newNotificationId) => {
         if (notificationId === newNotificationId) {
           openByWindowSetting('https://web.archive.org/web/' + data.timestamp + '/' + data.original_url)
@@ -266,7 +254,7 @@ function statusFailed(atab, pageUrl, silent, data, err) {
     }, checkLastError)
     // notify
     if (!silent) {
-      notify('Error: ' + data.message, (notificationId) => {
+      notifyMsg('Error: ' + data.message, (notificationId) => {
         chrome.notifications && chrome.notifications.onClicked.addListener((newNotificationId) => {
           if (notificationId === newNotificationId) {
             openByWindowSetting('https://archive.org/account/login')
@@ -407,7 +395,9 @@ function getCachedFactCheck(url, onSuccess, onFail) {
 chrome.storage.local.get({ agreement: false }, (settings) => {
   if (settings && settings.agreement) {
     chrome.browserAction.setPopup({ popup: chrome.runtime.getURL('index.html') }, checkLastError)
-    setupContextMenus()
+    setupContextMenus(true)
+  } else {
+    setupContextMenus(false)
   }
 })
 
@@ -564,16 +554,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // open URL in new tab or window depending on setting
     let page_url = getCleanUrl(message.page_url)
     if (isValidUrl(page_url) && isNotExcludedUrl(page_url)) {
-      let open_url = message.wayback_url + page_url
-      URLopener(open_url, page_url, false)
+      openByWindowSetting(message.wayback_url + page_url)
     }
-  } else if (message.message === 'getLastSaveTime') {
-    // get most recent saved time
-    getCachedWaybackCount(message.page_url,
-      (values) => { sendResponse({ message: 'last_save', timestamp: values.last_ts }) },
-      (error) => { sendResponse({ message: 'last_save', timestamp: '', error: error }) }
-    )
-    return true
   } else if (message.message === 'getWikipediaBooks') {
     // retrieve wikipedia books
     getCachedBooks(message.query,
@@ -698,17 +680,16 @@ chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
     chrome.storage.local.get(['not_found_setting', 'auto_archive_setting', 'auto_archive_age', 'fact_check_setting', 'wiki_setting'], (settings) => {
       // auto save page
       if (settings && settings.auto_archive_setting) {
+        let beforeDate = null
         if (settings.auto_archive_age) {
           // auto_archive_age is an int of days before now
           const days = parseInt(settings.auto_archive_age, 10)
           if (!isNaN(days)) {
             const milisecs = days * 24 * 60 * 60 * 1000
-            const beforeDate = new Date(Date.now() - milisecs)
-            autoSave(tab, url, beforeDate)
+            beforeDate = new Date(Date.now() - milisecs)
           }
-        } else {
-          autoSave(tab, url)
         }
+        autoSave(tab, url, beforeDate)
       }
 
       // 404 not found
@@ -831,31 +812,36 @@ chrome.tabs.onActivated.addListener((info) => {
 /**
  * Runs savePageNow if given tab not currently in saving state.
  * First checks if url available in WM, and only saves if beforeDate is prior
- * to last save date, or saves if never been saved before.
+ * to last save date, or saves if never been saved before, or beforeDate not provided.
+ * Will not save URLs blocked by the WM API, or URLs in the Auto Exclude List.
  * @param atab {Tab}: Current tab, required to check save status.
  * @param url {string}: URL to save.
  * @param beforeDate {Date}: Date that will be checked only if url previously saved in WM.
+ * Leave empty to always save. Set to null to save only if hadn't been previously saved.
  */
-function autoSave(atab, url, beforeDate) {
+function autoSave(atab, url, beforeDate = new Date()) {
   if (isValidUrl(url) && isNotExcludedUrl(url) && !getToolbarState(atab).has('S')) {
     chrome.storage.local.get(['auto_exclude_list'], (items) => {
       if (!('auto_exclude_list' in items) ||
        (('auto_exclude_list' in items) && items.auto_exclude_list && !isUrlInList(url, items.auto_exclude_list))) {
-        wmAvailabilityCheck(url,
-          (wayback_url, url, timestamp) => {
-            // save if timestamp from availability API is older than beforeDate
-            if (beforeDate) {
-              const checkDate = timestampToDate(timestamp)
-              if (checkDate.getTime() < beforeDate.getTime()) {
-                savePageNowChecked(atab, url, true)
-              }
-            }
-          },
-          () => {
-            // set auto-save toolbar icon if page doesn't exist, then save it
+        // checking against cached time will prevent recent auto-saves from re-saving again.
+        getCachedWaybackCount(url, (values) => {
+          if (('total' in values) && (values.total === -1)) {
+            // don't auto save since this is a blocked URL
+          } else if (('total' in values) && (values.total === 0)) {
+            // save since url hasn't been saved before
             savePageNowChecked(atab, url, true)
+          } else if (beforeDate && ('last_ts' in values) && values.last_ts) {
+            // save if timestamp from wayback count is older than beforeDate
+            const checkDate = timestampToDate(values.last_ts)
+            if (checkDate.getTime() < beforeDate.getTime()) {
+              savePageNowChecked(atab, url, true)
+            }
           }
-        )
+        },
+        (error) => {
+          console.log('wayback count error: ' + error)
+        })
       }
     })
   }
@@ -873,6 +859,48 @@ function autoSaveChecked(atab, url, beforeDate) {
 }
 */
 
+// Add a listener for handling Auto Save Bookmarks.
+function autoBookmarksListener(id, bookmark) {
+  // This runs whenever a bookmark is saved.
+  if (('url' in bookmark) && isValidUrl(bookmark.url) && isNotExcludedUrl(bookmark.url) && !isArchiveUrl(bookmark.url)) {
+    chrome.storage.local.get(['auto_bookmark_setting'], (settings) => {
+      if (settings && settings.auto_bookmark_setting) {
+        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+          // The check here that current tab URL == bookmark URL is a temp solution to
+          // the issue caused when bookmarking "All Tabs" which could cause too many saves at once.
+          // This forces only 1 URL to be saved. Also prevents importing URLs from saving any.
+          // Trying to solve multiple URLs would require a queue. Could open a Bulk Save window?
+          if (tabs && tabs[0] && (tabs[0].url === bookmark.url)) {
+            autoSave(tabs[0], bookmark.url)
+          }
+        })
+      }
+    })
+  }
+}
+
+// Should call this after 'bookmarks' permission Allowed and on start.
+function setupAutoSaveBookmarks() {
+  // adding a named function instead of anonymous function should prevent multiple listeners from being added.
+  // safari doesn't support chrome.bookmarks
+  chrome.bookmarks && chrome.bookmarks.onCreated && chrome.bookmarks.onCreated.addListener(autoBookmarksListener)
+}
+
+// Called when an optional permission is acquired such as 'bookmarks'.
+chrome.permissions.onAdded.addListener((permissions) => {
+  if (permissions.permissions.indexOf('bookmarks') >= 0) {
+    setupAutoSaveBookmarks()
+    // Bug fix to set setting value because when popup goes away, code in settings.js won't run.
+    // FIXME: This is a Hack which may be unintended if any other code attempts to request the
+    // 'bookmarks' permission (or ANY optional permission!) in the future. (e.g. Bulk Save)
+    // It's hard to see a solution without major refactoring since dependent functions are all in background.js
+    chrome.storage.local.set({ auto_bookmark_setting: true })
+  }
+})
+
+// Called once on extension load, in case permission allowed on start.
+setupAutoSaveBookmarks()
+
 // Call Context Notices API, parse and store results if success, then set the toolbar state.
 //
 function factCheck(atab, url) {
@@ -889,28 +917,37 @@ function factCheck(atab, url) {
           // Create a Wayback Machine URL from most recent timestamp, or the latest capture if no timestamp returned.
           // If multiple notices, pick notice with most recent timestamp.
 
-          let latestTimestamp = '2' // latest capture in Wayback Machine URL
-          let latestDate = new Date(0) // epoch 1/1/1970
+          // let latestTimestamp = '2' // latest capture in Wayback Machine URL
+          // let latestDate = new Date(0) // epoch 1/1/1970
 
           // loop through every timestamp present
-          json.notices.forEach(ntc => {
-            if (('where' in ntc) && ntc.where && ('timestamp' in ntc.where)) {
-              const tstamps = ntc.where.timestamp || []
-              tstamps.forEach(tstamp => {
-                // compare each timestamp to latest
-                const timestamp = (tstamp.charAt(0) === '-') ? tstamp.slice(1) : tstamp // remove leading dash
-                const date = timestampToDate(timestamp)
-                if (date.getTime() > latestDate.getTime()) {
-                  latestDate = date
-                  latestTimestamp = timestamp
-                }
-              })
+          // json.notices.forEach(ntc => {
+          //   if (('where' in ntc) && ntc.where && ('timestamp' in ntc.where)) {
+          //     const tstamps = ntc.where.timestamp || []
+          //     tstamps.forEach(tstamp => {
+          //       // compare each timestamp to latest
+          //       const timestamp = (tstamp.charAt(0) === '-') ? tstamp.slice(1) : tstamp // remove leading dash
+          //       const date = timestampToDate(timestamp)
+          //       if (date.getTime() > latestDate.getTime()) {
+          //         latestDate = date
+          //         latestTimestamp = timestamp
+          //       }
+          //     })
+          //   }
+          // })
+
+          // extract context URL from notice text, if present
+          if ('notice' in json.notices[0]) {
+            const aMatch = (json.notices[0]['notice']).match(/href="([^"]*)/)
+            if (aMatch) {
+              const contextUrl = aMatch[1]
+              if (contextUrl !== url) {
+                // only show context button if URL different than current URL in address bar
+                saveTabData(atab, { 'contextUrl': contextUrl })
+                addToolbarState(atab, 'F')
+              }
             }
-          })
-          // save wayback url
-          const waybackUrl = 'https://web.archive.org/web/' + latestTimestamp + '/' + url
-          saveTabData(atab, { 'contextUrl': waybackUrl })
-          addToolbarState(atab, 'F')
+          }
         }
       },
       (error) => {
@@ -941,15 +978,19 @@ function clearCountCache() {
 /**
  * Adds +1 to url in cache, or set to 1 if it doesn't exist.
  * Also updates "last_ts" with current timestamp.
+ * Doesn't update if cached "total" value was < 0.
  * @param url {string}
  */
 function incrementCount(url) {
   let cacheValues = waybackCountCache[url]
   let timestamp = dateToTimestamp(new Date())
   if (cacheValues && cacheValues.total) {
-    cacheValues.total += 1
-    cacheValues.last_ts = timestamp
-    waybackCountCache[url] = cacheValues
+    if (cacheValues.total > 0) {
+      cacheValues.total += 1
+      cacheValues.last_ts = timestamp
+      waybackCountCache[url] = cacheValues
+    }
+    // else don't update if total is a special value < 0
   } else {
     waybackCountCache[url] = { total: 1, last_ts: timestamp }
   }
@@ -960,7 +1001,7 @@ function updateWaybackCountBadge(atab, url) {
   chrome.storage.local.get(['wm_count_setting'], (settings) => {
     if (settings && settings.wm_count_setting && isValidUrl(url) && isNotExcludedUrl(url) && !isArchiveUrl(url)) {
       getCachedWaybackCount(url, (values) => {
-        if (values.total >= 0) {
+        if ((values.total >= 0) && !getToolbarState(atab).has('S')) {
           // display badge
           let text = badgeCountText(values.total)
           chrome.browserAction.setBadgeBackgroundColor({ color: '#9A3B38' }, checkLastError) // red
@@ -1079,8 +1120,8 @@ function updateToolbar(atab) {
 
 // Right-click context menu "Wayback Machine" inside the page.
 chrome.contextMenus.onClicked.addListener((click) => {
-  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-    if (['first', 'recent', 'save', 'all'].indexOf(click.menuItemId) >= 0) {
+  if (['first', 'recent', 'save', 'all'].indexOf(click.menuItemId) >= 0) {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       let url = click.linkUrl || tabs[0].url
       if (isValidUrl(url) && isNotExcludedUrl(url)) {
         let page_url = getCleanUrl(url)
@@ -1097,14 +1138,14 @@ chrome.contextMenus.onClicked.addListener((click) => {
           savePageNowChecked(atab, page_url, false, options)
           return true
         }
-        let open_url = wayback_url + page_url
-        URLopener(open_url, page_url, false)
+        openByWindowSetting(wayback_url + page_url)
       } else {
-        const msg = 'This URL is excluded.'
-        if (isFirefox) { notify(msg) } else { alert(msg) }
+        alertMsg('URL not supported.')
       }
-    }
-  })
+    })
+  } else if (click.menuItemId === 'welcome') {
+    openByWindowSetting(chrome.runtime.getURL('welcome.html'), 'tab')
+  }
 })
 
 if (typeof module !== 'undefined') {
